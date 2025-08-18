@@ -1,0 +1,87 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.3
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - xpack.security.enabled=false
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  mft-processor:
+    restart: "no"
+    build:
+      context: ./containers/mft
+      dockerfile: Dockerfile
+    volumes:
+      - ./data_input:/data_input:ro
+      - ./data_output:/data_output
+    environment:
+      - TZ=UTC
+    command: ["/scripts/process_mft.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    
+  evtx-processor:
+    restart: "no"
+    build:
+      context: ./containers/evtx
+      dockerfile: Dockerfile
+    volumes:
+      - ./data_input:/data_input:ro
+      - ./data_output:/data_output
+    environment:
+      - TZ=UTC
+    command: ["/scripts/process_evtx.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    
+  registry-processor:
+    restart: "no"
+    build:
+      context: ./containers/registry
+      dockerfile: Dockerfile
+    volumes:
+      - ./data_input:/data_input:ro
+      - ./data_output:/data_output
+    environment:
+      - TZ=UTC
+    command: ["/scripts/process_registry.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  es_data:
+    driver: local

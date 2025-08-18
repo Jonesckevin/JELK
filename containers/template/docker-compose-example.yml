@@ -1,0 +1,17 @@
+# Add this section to your docker-compose.yml file
+# Replace YOUR_PARSER_NAME with your actual parser name
+
+  YOUR_PARSER_NAME-processor:
+    restart: "no"
+    build:
+      context: ./containers/YOUR_PARSER_NAME
+      dockerfile: Dockerfile
+    volumes:
+      - ./data_input:/data_input:ro
+      - ./data_output:/data_output
+    environment:
+      - TZ=UTC
+    command: ["/scripts/process_YOUR_PARSER_NAME.sh"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy

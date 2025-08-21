@@ -35,7 +35,7 @@ RUN chmod +x /tools/regripper/rip.pl
 RUN find /tools/regripper/plugins -name "*.pl" -exec chmod +x {} \;
 
 # Copy shared upload functions and processing script
-COPY ../shared/upload-functions.ps1 /shared/
+COPY upload-functions.ps1 /shared/
 COPY process_registry.sh /scripts/process_registry.sh
 RUN chmod +x /scripts/process_registry.sh
 

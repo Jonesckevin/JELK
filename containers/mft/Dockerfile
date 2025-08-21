@@ -42,7 +42,7 @@ RUN cd /tmp && \
     wine msiexec /i wine-mono-8.1.0-x86.msi /quiet
 
 # Copy shared upload functions and processing script
-COPY ../shared/upload-functions.ps1 /shared/
+COPY upload-functions.ps1 /shared/
 COPY process_mft.sh /scripts/process_mft.sh
 RUN chmod +x /scripts/process_mft.sh
 

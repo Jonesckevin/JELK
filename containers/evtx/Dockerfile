@@ -9,6 +9,8 @@ RUN dpkg --add-architecture i386 && \
     wine \
     cabextract \
     curl \
+    sed \
+    dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PowerShell
@@ -46,7 +48,9 @@ RUN apt-get update && apt-get install -y git && \
 
 # Copy shared upload functions and processing script
 COPY upload-functions.ps1 /shared/
-COPY process_evtx.sh /scripts/
-RUN chmod +x /scripts/process_evtx.sh
+COPY process_evtx.sh /scripts/process_evtx.sh
+# Normalize line endings and ensure executable
+RUN dos2unix /scripts/process_evtx.sh || sed -i 's/\r$//' /scripts/process_evtx.sh \
+    && chmod +x /scripts/process_evtx.sh
 
 WORKDIR /data_input

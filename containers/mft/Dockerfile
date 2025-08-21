@@ -7,6 +7,8 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     sleuthkit \
+    sed \
+    dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
 # Create working directories
@@ -26,6 +28,8 @@ RUN dpkg --add-architecture i386 && \
     wget \
     cabextract \
     curl \
+    sed \
+    dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PowerShell
@@ -44,6 +48,8 @@ RUN cd /tmp && \
 # Copy shared upload functions and processing script
 COPY upload-functions.ps1 /shared/
 COPY process_mft.sh /scripts/process_mft.sh
-RUN chmod +x /scripts/process_mft.sh
+# Normalize line endings (handle potential CRLF) and ensure executable
+RUN dos2unix /scripts/process_mft.sh || sed -i 's/\r$//' /scripts/process_mft.sh \
+    && chmod +x /scripts/process_mft.sh
 
 WORKDIR /data_input

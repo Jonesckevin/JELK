@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     cpanminus \
     build-essential \
     curl \
+    dos2unix \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PowerShell
@@ -37,6 +38,8 @@ RUN find /tools/regripper/plugins -name "*.pl" -exec chmod +x {} \;
 # Copy shared upload functions and processing script
 COPY upload-functions.ps1 /shared/
 COPY process_registry.sh /scripts/process_registry.sh
-RUN chmod +x /scripts/process_registry.sh
+# Normalize line endings and ensure executable
+RUN dos2unix /scripts/process_registry.sh || sed -i 's/\r$//' /scripts/process_registry.sh \
+    && chmod +x /scripts/process_registry.sh
 
 WORKDIR /data_input

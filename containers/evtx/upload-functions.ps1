@@ -53,13 +53,60 @@ function Upload-CSVToElasticsearch {
     $indexMapping = @{
         mappings = @{
             properties = @{
-                "@timestamp" = @{
+                "@timestamp"  = @{
                     type   = "date"
                     format = "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd'T'HH:mm:ss||epoch_millis"
+                }
+                ParsedPayload = @{
+                    enabled = $false
                 }
             }
         }
     } | ConvertTo-Json -Depth 10
+    
+    # Create ingest pipeline for parsing JSON Payload field
+    $pipelineName = "evtx-payload-parser"
+    $pipelineBody = @{
+        description = "Parse EVTX Payload JSON and extract fields"
+        processors  = @(
+            @{
+                json = @{
+                    field          = "Payload"
+                    target_field   = "ParsedPayload"
+                    ignore_failure = $true
+                }
+            },
+            @{
+                script = @{
+                    lang           = "painless"
+                    source         = @"
+if (ctx.ParsedPayload?.EventData?.Data != null) {
+  def data = ctx.ParsedPayload.EventData.Data;
+  if (data instanceof List) {
+    for (def item : data) {
+      if (item instanceof Map && item.containsKey('@Name') && item.containsKey('#text')) {
+        def fieldName = 'Parsed_' + item['@Name'];
+        ctx[fieldName] = item['#text'];
+      }
+    }
+  } else if (data instanceof String) {
+    ctx.Parsed_DataString = data;
+  }
+}
+"@
+                    ignore_failure = $true
+                }
+            }
+        )
+    } | ConvertTo-Json -Depth 10
+    
+    try {
+        Invoke-RestMethod -Uri "$ElasticsearchUrl/_ingest/pipeline/$pipelineName" -Method Put -Body $pipelineBody -ContentType "application/json" | Out-Null
+        Write-Host "Created ingest pipeline: $pipelineName"
+    }
+    catch {
+        Write-Host "Pipeline may already exist or error creating: $_"
+    }
     
     try {
         Invoke-RestMethod -Uri "$ElasticsearchUrl/$indexName" -Method Put -ContentType "application/json" -Body $indexMapping
@@ -69,31 +116,37 @@ function Upload-CSVToElasticsearch {
         Write-Host "Index $indexName might already exist: $_"
     }
     
-    # Read CSV file (limit to first 500 rows for large files to avoid memory issues)
+    # Read CSV file
     try {
-        $csvData = Import-Csv -Path $CsvFile | Select-Object -First 500
+        $csvData = Import-Csv -Path $CsvFile
         Write-Host "Read $($csvData.Count) records from $CsvFile"
         
         if ($csvData.Count -eq 0) {
             Write-Host "No data found in CSV file"
             return $false
         }
-        
-        # Upload in batches of 50 to avoid overwhelming Elasticsearch
-        $batchSize = 50
+
+        # Upload in batches of 500 to avoid overwhelming Elasticsearch
+        $batchSize = 1500
         $totalUploaded = 0
+        $totalFailed = 0
         
         for ($i = 0; $i -lt $csvData.Count; $i += $batchSize) {
             $batch = $csvData | Select-Object -Skip $i -First $batchSize
             $bulkBody = @()
             
             foreach ($record in $batch) {
-                # Add index action
-                $bulkBody += (@{index = @{_index = $indexName } } | ConvertTo-Json -Compress)
+                # Add index action with pipeline
+                $bulkBody += (@{index = @{_index = $indexName; pipeline = "evtx-payload-parser" } } | ConvertTo-Json -Compress)
                 
-                # Don't add @timestamp since we already have a Date field that gets mapped as date type
-                # Add document
-                $bulkBody += ($record | ConvertTo-Json -Compress)
+                # Convert PSCustomObject to hashtable to ensure proper JSON serialization
+                $docHash = @{}
+                $record.PSObject.Properties | ForEach-Object {
+                    $docHash[$_.Name] = $_.Value
+                }
+                
+                # Add document (Elasticsearch will parse the Payload via the pipeline)
+                $bulkBody += ($docHash | ConvertTo-Json -Compress -Depth 10)
             }
             
             $bulkData = ($bulkBody -join "`n") + "`n"
@@ -101,25 +154,32 @@ function Upload-CSVToElasticsearch {
             try {
                 $response = Invoke-RestMethod -Uri "$ElasticsearchUrl/_bulk" -Method Post -Body $bulkData -ContentType "application/x-ndjson" -TimeoutSec 60
                 
+                $batchNum = [math]::Floor($i / $batchSize) + 1
+                $batchSuccessful = 0
+                $batchFailed = 0
+                
                 if (-not $response.errors) {
+                    $batchSuccessful = $batch.Count
                     $totalUploaded += $batch.Count
-                    Write-Host "Uploaded batch $([math]::Floor($i / $batchSize) + 1), total docs: $totalUploaded"
+                    Write-Host "Batch ${batchNum}: ${batchSuccessful} successful, 0 failed. Total: ${totalUploaded} successful"
                 }
                 else {
-                    Write-Host "Errors in batch $([math]::Floor($i / $batchSize) + 1):"
                     foreach ($item in $response.items) {
                         if ($item.index.error) {
-                            Write-Host "  Error: $($item.index.error.type) - $($item.index.error.reason)"
+                            $batchFailed++
+                            $totalFailed++
                         }
                         else {
+                            $batchSuccessful++
                             $totalUploaded++
                         }
                     }
-                    Write-Host "Batch $([math]::Floor($i / $batchSize) + 1) completed with some errors, total successful: $totalUploaded"
+                    Write-Host "Batch ${batchNum}: ${batchSuccessful} successful, ${batchFailed} failed. Total: ${totalUploaded} successful, ${totalFailed} failed"
                 }
             }
             catch {
                 Write-Host "Failed to upload batch: $_"
+                $totalFailed += $batch.Count
             }
             
             # Small delay between batches
@@ -134,7 +194,22 @@ function Upload-CSVToElasticsearch {
             Write-Host "Could not refresh index, but data was uploaded"
         }
         
-        Write-Host "Successfully uploaded $totalUploaded documents to index: $indexName"
+        Write-Host ""
+        Write-Host "=========================================="
+        Write-Host "Upload Summary:"
+        Write-Host "  Total records in CSV: $($csvData.Count)"
+        Write-Host "  Successfully uploaded: $totalUploaded"
+        Write-Host "  Failed to upload: $totalFailed"
+        Write-Host "  Success rate: $([math]::Round(($totalUploaded / $csvData.Count) * 100, 2))%"
+        Write-Host "  Index: $indexName"
+        Write-Host "=========================================="
+        Write-Host ""
+        
+        if ($totalFailed -gt 0) {
+            Write-Host "WARNING: $totalFailed records failed to upload due to mapping conflicts."
+            Write-Host "These records have incompatible data structures (string vs array in EventData.Data)"
+        }
+        
         return $true
         
     }
